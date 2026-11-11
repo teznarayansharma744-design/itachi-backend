@@ -1,5 +1,5 @@
 """Admin API used by the admin panel inside the app.
-Log in with ADMIN_PASSWORD, then manage keys (students)."""
+Log in with ADMIN_PASSWORD, then manage keys (students) and the lectures."""
 import hmac
 import time
 from collections import defaultdict
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from . import config
-from .db import Key, SessionLocal, utcnow
+from .db import Batch, Key, Lecture, SessionLocal, Subject, Unit, utcnow
 from .utils import make_admin_token, new_key, norm, read_token
 
 router = APIRouter(prefix="/admin")
@@ -174,5 +174,177 @@ def delete_key(key: str, authorization: str | None = Header(None)):
     with SessionLocal() as db:
         k = _get_key(db, key)
         db.delete(k)
+        db.commit()
+    return {"ok": True}
+
+
+class DeviceBody(BaseModel):
+    device_id: str = Field(min_length=4, max_length=32)
+
+
+@router.post("/keys/{key}/device")
+def change_device(key: str, body: DeviceBody, authorization: str | None = Header(None)):
+    """Moves a key to another device. The old phone is logged out right away,
+    because its saved login no longer matches the key's device."""
+    require_admin(authorization)
+    with SessionLocal() as db:
+        k = _get_key(db, key)
+        k.device_id = norm(body.device_id)
+        db.commit()
+        return _key_dict(k)
+
+
+# ---------------- content: batches, subjects, units, lectures ----------------
+
+def _clean_link(value: str | None) -> str | None:
+    """Empty means no link. Otherwise it must be a plain https link."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    if not v.lower().startswith("https://") or " " in v or len(v) > 2000:
+        raise HTTPException(400, "Links must start with https:// and have no spaces.")
+    return v
+
+
+def _lecture_dict(l: Lecture) -> dict:
+    return {
+        "id": l.id,
+        "title": l.title,
+        "video_url": l.video_url or "",
+        "pdf_url": l.pdf_url or "",
+        "has_video": bool(l.video_url or l.video_msg_id),
+        "has_pdf": bool(l.pdf_url or l.pdf_msg_id),
+        "free": bool(l.free),
+    }
+
+
+@router.get("/content")
+def content(authorization: str | None = Header(None)):
+    """Everything in one call, so the panel can show what is added."""
+    require_admin(authorization)
+    with SessionLocal() as db:
+        return [
+            {
+                "id": b.id,
+                "name": b.name,
+                "subjects": [
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "units": [
+                            {
+                                "id": u.id,
+                                "name": u.name,
+                                "lectures": [_lecture_dict(l) for l in u.lectures],
+                            }
+                            for u in s.units
+                        ],
+                    }
+                    for s in b.subjects
+                ],
+            }
+            for b in db.scalars(select(Batch).order_by(Batch.id))
+        ]
+
+
+class LectureBody(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    video_url: str = ""
+    pdf_url: str = ""
+    free: bool = False
+    unit_id: int | None = None  # needed when creating
+
+
+@router.post("/lectures")
+def add_lecture(body: LectureBody, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    video, pdf = _clean_link(body.video_url), _clean_link(body.pdf_url)
+    if not video and not pdf:
+        raise HTTPException(400, "Add a video link, a PDF link, or both.")
+    with SessionLocal() as db:
+        if body.unit_id is None or not db.get(Unit, body.unit_id):
+            raise HTTPException(400, "Unit not found.")
+        lec = Lecture(
+            unit_id=body.unit_id, title=body.title.strip(), video_url=video, pdf_url=pdf, free=body.free
+        )
+        db.add(lec)
+        db.commit()
+        return _lecture_dict(lec)
+
+
+@router.put("/lectures/{lecture_id}")
+def edit_lecture(lecture_id: int, body: LectureBody, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    video, pdf = _clean_link(body.video_url), _clean_link(body.pdf_url)
+    with SessionLocal() as db:
+        lec = db.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Not found.")
+        if not (video or pdf or lec.video_msg_id or lec.pdf_msg_id):
+            raise HTTPException(400, "A lecture needs a video link or a PDF link.")
+        lec.title = body.title.strip()
+        lec.video_url = video
+        lec.pdf_url = pdf
+        lec.free = body.free
+        db.commit()
+        return _lecture_dict(lec)
+
+
+class NameBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    parent_id: int | None = None  # batch id for a subject, subject id for a unit
+
+
+# kind -> (model, parent model, parent column name)
+_TREE = {
+    "batches": (Batch, None, None),
+    "subjects": (Subject, Batch, "batch_id"),
+    "units": (Unit, Subject, "subject_id"),
+}
+
+
+@router.post("/{kind}")
+def add_item(kind: str, body: NameBody, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    if kind not in _TREE:
+        raise HTTPException(404, "Not found.")
+    model, parent_model, column = _TREE[kind]
+    with SessionLocal() as db:
+        fields = {"name": body.name.strip()}
+        if parent_model:
+            if body.parent_id is None or not db.get(parent_model, body.parent_id):
+                raise HTTPException(400, "Parent not found.")
+            fields[column] = body.parent_id
+        row = model(**fields)
+        db.add(row)
+        db.commit()
+        return {"id": row.id, "name": row.name}
+
+
+@router.patch("/{kind}/{item_id}")
+def rename_item(kind: str, item_id: int, body: NameBody, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    if kind not in _TREE:
+        raise HTTPException(404, "Not found.")
+    with SessionLocal() as db:
+        row = db.get(_TREE[kind][0], item_id)
+        if not row:
+            raise HTTPException(404, "Not found.")
+        row.name = body.name.strip()
+        db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{kind}/{item_id}")
+def delete_item(kind: str, item_id: int, authorization: str | None = Header(None)):
+    require_admin(authorization)
+    models = {**{k: v[0] for k, v in _TREE.items()}, "lectures": Lecture}
+    if kind not in models:
+        raise HTTPException(404, "Not found.")
+    with SessionLocal() as db:
+        row = db.get(models[kind], item_id)
+        if not row:
+            raise HTTPException(404, "Not found.")
+        db.delete(row)  # everything inside it goes too
         db.commit()
     return {"ok": True}
