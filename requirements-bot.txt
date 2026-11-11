@@ -1,0 +1,5 @@
+# Only what run_bot.py needs (all pure Python, installs fine on Termux)
+sqlalchemy>=2.0,<3
+pg8000>=1.30
+python-telegram-bot>=21,<23
+python-dotenv>=1.0

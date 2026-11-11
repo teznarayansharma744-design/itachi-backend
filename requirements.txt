@@ -1,0 +1,7 @@
+# Server only (the bot has its own file: requirements-bot.txt)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0,<3
+pg8000>=1.30
+telethon>=1.36,<2
+python-dotenv>=1.0
