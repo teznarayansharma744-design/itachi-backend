@@ -32,3 +32,10 @@ def test_paid_payment_id():
 
 def test_shop_secret_stable():
     assert shop_secret("a") == shop_secret("a") and shop_secret("a") != shop_secret("b")
+
+
+def test_parse_device_id():
+    from app.payments import parse_device_id
+    assert parse_device_id("my id is 7k2m-9xqp-4tda ok") == "7K2M-9XQP-4TDA"
+    assert parse_device_id("/start") is None
+    assert parse_device_id("1234-5678") is None

@@ -34,6 +34,6 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 # Your server address, e.g. https://itachi-backend.onrender.com (no slash at the end)
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
-# Plans as name:days:price_in_rupees, separated by commas.
-PLANS = os.environ.get("PLANS", "1 Month:30:299,6 Months:180:1499,1 Year:365:2499")
+# Plans as name:days:price_in_rupees, separated by commas. 36500 days = lifetime.
+PLANS = os.environ.get("PLANS", "Lifetime:36500:100")
 SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "Use_r_tg")

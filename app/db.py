@@ -113,6 +113,7 @@ class Order(Base):
     plan_name: Mapped[str] = mapped_column(String(100))
     days: Mapped[int]
     amount_paise: Mapped[int]
+    device_id: Mapped[str] = mapped_column(String(32), default="")
     link_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | paid
     payment_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
@@ -122,6 +123,10 @@ class Order(Base):
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    order_cols = {c["name"] for c in inspect(engine).get_columns("orders")}
+    if "device_id" not in order_cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN device_id VARCHAR(32) DEFAULT ''"))
     # create_all does not add columns to a table that already exists, so add them here.
     have = {c["name"] for c in inspect(engine).get_columns("lectures")}
     with engine.begin() as conn:

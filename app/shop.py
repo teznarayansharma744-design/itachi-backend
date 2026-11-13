@@ -15,6 +15,7 @@ from . import config
 from .db import Key, Order, SessionLocal, utcnow
 from .payments import (
     paid_payment_id,
+    parse_device_id,
     parse_plans,
     rz_create_link,
     rz_get_link,
@@ -63,53 +64,40 @@ def set_telegram_webhook() -> None:
 # ---------- Fulfilment (the only place a key is created) ----------
 
 def fulfil(order_id: str, payment_id: str) -> str | None:
-    """Marks the order paid and gives the buyer a key. Safe to call twice: the second call
-    does nothing. Returns the key if THIS call created or extended it, else None."""
+    """Marks the order paid and creates the key for the device in the order. Safe to call
+    twice: the second call does nothing. Returns the new key, or None if already done."""
     with SessionLocal() as db:
         order = db.scalars(select(Order).where(Order.id == order_id).with_for_update()).first()
         if not order or order.status == "paid":
             return None
-        # A buyer who already owns a working key gets that key extended, not a second one.
-        old = None
-        prev = db.scalars(
-            select(Order)
-            .where(Order.tg_id == order.tg_id, Order.status == "paid", Order.key.is_not(None))
-            .order_by(Order.created_at.desc())
-        ).first()
-        if prev:
-            old = db.get(Key, prev.key)
-            if old and old.revoked:
-                old = None
-        if old:
-            start = max(old.expires_at, utcnow())
-            old.expires_at = start + timedelta(days=order.days)
-            key = old
-        else:
-            key = Key(
-                key=new_key(),
-                device_id="",  # binds to the first phone that activates it
-                expires_at=utcnow() + timedelta(days=order.days),
-                note=f"tg:{order.tg_id} {order.plan_name}",
-            )
-            db.add(key)
+        key = Key(
+            key=new_key(),
+            device_id=order.device_id,  # locked to the phone the buyer gave us
+            expires_at=utcnow() + timedelta(days=order.days),
+            note=f"tg:{order.tg_id} {order.plan_name}",
+        )
+        db.add(key)
         order.status = "paid"
         order.payment_id = payment_id
         order.key = key.key
         db.commit()
-        tg_id, plan, value, extended = order.tg_id, order.plan_name, key.key, old is not None
-        until = key.expires_at.strftime("%d %b %Y")
-    _send(tg_id, _key_text(plan, value, until, extended))
+        tg_id, plan, value, device = order.tg_id, order.plan_name, key.key, order.device_id
+        until = _until(key.expires_at, order.days)
+    _send(tg_id, _key_text(plan, value, until, device))
     return value
 
 
-def _key_text(plan: str, key: str, until: str, extended: bool) -> str:
-    head = "Payment received. Your key was extended." if extended else "Payment received. Here is your key."
+def _until(expires_at, days: int) -> str:
+    return "Lifetime" if days >= 36500 else expires_at.strftime("%d %b %Y")
+
+
+def _key_text(plan: str, key: str, until: str, device: str) -> str:
     return (
-        f"<b>{head}</b>\n\n"
-        f"Plan: {html.escape(plan)}\nValid till: {until}\n\n"
+        "<b>Payment received. Here is your key.</b>\n\n"
+        f"Plan: {html.escape(plan)}\nValid till: {until}\nDevice: <code>{html.escape(device)}</code>\n\n"
         f"<code>{html.escape(key)}</code>\n\n"
-        "Open the app, tap Get Premium, and paste this key. The key locks to the first phone "
-        "that uses it, so keep it private."
+        "Open the app, tap Get Premium, and paste this key. It works only on the phone whose "
+        "Device ID you gave. Keep it private."
     )
 
 
@@ -159,13 +147,19 @@ async def telegram_webhook(secret: str, request: Request):
     return {"ok": True}  # always 200, or Telegram keeps retrying
 
 
-def _plans_text(plans) -> str:
-    lines = [f"• {html.escape(p['name'])}: ₹{p['price']}" for p in plans]
-    return "<b>Itachi Universe Premium</b>\n\n" + "\n".join(lines) + "\n\nPick a plan to pay."
+def _price_lines(plans) -> str:
+    return "\n".join(f"• {html.escape(p['name'])}: ₹{p['price']}" for p in plans)
 
 
-def _plan_buttons(plans):
-    return [[{"text": f"{p['name']} · ₹{p['price']}", "callback_data": f"buy:{p['id']}"}] for p in plans]
+def _ask_device(chat: int, plans) -> None:
+    _send(
+        chat,
+        "<b>Itachi Universe Premium</b>\n\n"
+        f"{_price_lines(plans)}\n\n"
+        "Step 1: open the app, go to Get Premium and copy your <b>Device ID</b> "
+        "(looks like <code>7K2M-9XQP-4TDA</code>).\n"
+        "Step 2: send it to me here. Then you can pay and I will send your key.",
+    )
 
 
 def _handle_update(update: dict) -> None:
@@ -181,7 +175,8 @@ def _handle_update(update: dict) -> None:
         chat = cq["from"]["id"]
         data = cq.get("data", "")
         if data.startswith("buy:"):
-            _start_purchase(chat, data[4:], plans)
+            _, plan_id, device = (data.split(":", 2) + ["", ""])[:3]
+            _start_purchase(chat, plan_id, parse_device_id(device), plans)
         elif data.startswith("paid:"):
             _check_paid(chat, data[5:])
         return
@@ -189,25 +184,47 @@ def _handle_update(update: dict) -> None:
     chat = (msg.get("chat") or {}).get("id")
     if not chat or (msg.get("chat") or {}).get("type") != "private":
         return
-    text = (msg.get("text") or "").strip().lower()
-    if text.startswith("/mykey"):
+    text = (msg.get("text") or "").strip()
+    low = text.lower()
+    if low.startswith("/mykey"):
         _my_key(chat)
-    elif text.startswith("/help"):
+    elif low.startswith("/help"):
         _send(
             chat,
-            "Send /start to see plans and pay. Send /mykey to see your key again. "
+            "Send /start to buy. Send /mykey to see your keys again. "
             f"Problem with a payment? Message @{html.escape(config.SUPPORT_USERNAME)}.",
         )
+    elif low.startswith("/start") or not parse_device_id(text):
+        _ask_device(chat, plans)
     else:
-        _send(chat, _plans_text(plans), _plan_buttons(plans))
+        device = parse_device_id(text)
+        if len(plans) == 1:
+            _start_purchase(chat, plans[0]["id"], device, plans)
+        else:
+            _send(
+                chat,
+                f"Device ID: <code>{device}</code>\nPick a plan:",
+                [[{"text": f"{p['name']} · ₹{p['price']}", "callback_data": f"buy:{p['id']}:{device}"}] for p in plans],
+            )
 
 
-def _start_purchase(chat: int, plan_id: str, plans) -> None:
+def _start_purchase(chat: int, plan_id: str, device: str | None, plans) -> None:
     plan = next((p for p in plans if p["id"] == plan_id), None)
     if not plan:
         return _send(chat, "That plan is not available. Send /start again.")
+    if not device:
+        return _ask_device(chat, plans)
     since = utcnow() - timedelta(hours=1)
     with SessionLocal() as db:
+        owned = db.scalars(
+            select(Key).where(Key.device_id == device, Key.revoked == False, Key.expires_at > utcnow())  # noqa: E712
+        ).first()
+        if owned:
+            return _send(
+                chat,
+                "This Device ID already has an active key, so no payment is needed. "
+                f"If you lost it, send /mykey from the Telegram account you paid with, or message @{html.escape(config.SUPPORT_USERNAME)}.",
+            )
         recent = db.scalars(
             select(Order).where(Order.tg_id == chat, Order.created_at > since, Order.status == "pending")
         ).all()
@@ -218,6 +235,7 @@ def _start_purchase(chat: int, plan_id: str, plans) -> None:
             tg_id=chat,
             plan_name=plan["name"],
             days=plan["days"],
+            device_id=device,
             amount_paise=plan["price"] * 100,
         )
         db.add(order)
@@ -229,7 +247,7 @@ def _start_purchase(chat: int, plan_id: str, plans) -> None:
                 amount_paise=order.amount_paise,
                 description=f"Itachi Universe - {plan['name']}",
                 reference_id=order.id,
-                notes={"tg_id": str(chat), "order": order.id},
+                notes={"tg_id": str(chat), "order": order.id, "device": device},
                 expire_by=int(time.time()) + 2 * 3600,
             )
         except Exception as e:
@@ -242,7 +260,7 @@ def _start_purchase(chat: int, plan_id: str, plans) -> None:
         oid = order.id
     _send(
         chat,
-        f"<b>{html.escape(plan['name'])}</b> · ₹{plan['price']}\n\n"
+        f"<b>{html.escape(plan['name'])}</b> · ₹{plan['price']}\nDevice: <code>{device}</code>\n\n"
         "Pay with UPI, card or netbanking. Your key arrives here by itself within a minute of "
         "paying. The link works for 2 hours.",
         [
@@ -275,16 +293,20 @@ def _check_paid(chat: int, order_id: str) -> None:
 
 def _my_key(chat: int) -> None:
     with SessionLocal() as db:
-        order = db.scalars(
+        orders = db.scalars(
             select(Order).where(Order.tg_id == chat, Order.status == "paid", Order.key.is_not(None))
-            .order_by(Order.created_at.desc())
-        ).first()
-        key = db.get(Key, order.key) if order else None
-        if not key:
-            return _send(chat, "You have no key yet. Send /start to buy one.")
-        state = "revoked" if key.revoked else ("expired" if key.expires_at <= utcnow() else "active")
-        text = (
-            f"<code>{html.escape(key.key)}</code>\n\nStatus: {state}\n"
-            f"Valid till: {key.expires_at.strftime('%d %b %Y')}"
-        )
-    _send(chat, text)
+            .order_by(Order.created_at.desc()).limit(5)
+        ).all()
+        lines = []
+        for o in orders:
+            key = db.get(Key, o.key)
+            if not key:
+                continue
+            state = "revoked" if key.revoked else ("expired" if key.expires_at <= utcnow() else "active")
+            lines.append(
+                f"<code>{html.escape(key.key)}</code>\nDevice: <code>{html.escape(key.device_id)}</code>"
+                f" · {state} · {_until(key.expires_at, o.days)}"
+            )
+    if not lines:
+        return _send(chat, "You have no key yet. Send /start to buy one.")
+    _send(chat, "\n\n".join(lines))

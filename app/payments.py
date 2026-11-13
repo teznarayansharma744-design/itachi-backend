@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -92,3 +93,12 @@ def paid_payment_id(link: dict) -> str | None:
         if p.get("status") in ("captured", "paid"):
             return p.get("payment_id")
     return None
+
+
+_DEVICE_RE = re.compile(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}")
+
+
+def parse_device_id(text: str) -> str | None:
+    """Finds a Device ID like 7K2M-9XQP-4TDA in a message. Returns it in capitals, or None."""
+    m = _DEVICE_RE.search((text or "").upper())
+    return m.group(0) if m else None

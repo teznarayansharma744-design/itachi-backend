@@ -100,12 +100,12 @@ and sends it to them. It runs on Render through webhooks, so your phone can stay
 4. **Render environment variables:**
    `SHOP_BOT_TOKEN`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`,
    `PUBLIC_URL=https://YOUR-APP.onrender.com`, and optionally
-   `PLANS=1 Month:30:299,6 Months:180:1499,1 Year:365:2499` (name:days:rupees),
+   `PLANS=Lifetime:36500:100` (name:days:rupees, default is one lifetime plan for 100 rupees),
    `SUPPORT_USERNAME=Use_r_tg`.
 5. Redeploy. On start the server registers the Telegram webhook itself.
 6. Test: send /start to the shop bot, pay with a Razorpay test UPI/card, the key arrives.
 
-Notes: a key bought here locks to the first phone that activates it (the admin panel's
-"Change device" still works). Buying again extends the same key. Keep UptimeRobot pinging
+Notes: the bot asks for the buyer's Device ID first and the key is locked to it (the admin panel's
+"Change device" still works). Keep UptimeRobot pinging
 `/health` so Render is awake when a payment comes in. Razorpay retries a missed webhook, and
 the "I have paid, check now" button asks Razorpay directly as a backup.
