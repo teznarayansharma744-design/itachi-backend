@@ -87,3 +87,25 @@ Set `API_ID`, `API_HASH`, `SESSION_STRING` (from `gen_session.py`) and `CHANNEL_
 server, and `CHANNEL_ID` for the bot. Then post a video or PDF in the channel with the
 caption `unit_id | title | free` and the bot links it. This path streams through your
 server, so it uses hosting bandwidth.
+
+## Sell keys through a Telegram shop bot (auto payment)
+
+The buyer picks a plan in Telegram, pays on a Razorpay page, and the server creates the key
+and sends it to them. It runs on Render through webhooks, so your phone can stay off.
+
+1. **New bot:** make a second bot in @BotFather (not the lecture bot). Copy its token.
+2. **Razorpay:** create an account, then Settings > API Keys > generate keys (use Test mode first).
+3. **Webhook:** Razorpay dashboard > Settings > Webhooks > Add. URL
+   `https://YOUR-APP.onrender.com/shop/razorpay`, pick a secret, tick only **payment_link.paid**.
+4. **Render environment variables:**
+   `SHOP_BOT_TOKEN`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`,
+   `PUBLIC_URL=https://YOUR-APP.onrender.com`, and optionally
+   `PLANS=1 Month:30:299,6 Months:180:1499,1 Year:365:2499` (name:days:rupees),
+   `SUPPORT_USERNAME=Use_r_tg`.
+5. Redeploy. On start the server registers the Telegram webhook itself.
+6. Test: send /start to the shop bot, pay with a Razorpay test UPI/card, the key arrives.
+
+Notes: a key bought here locks to the first phone that activates it (the admin panel's
+"Change device" still works). Buying again extends the same key. Keep UptimeRobot pinging
+`/health` so Render is awake when a payment comes in. Razorpay retries a missed webhook, and
+the "I have paid, check now" button asks Razorpay directly as a backup.

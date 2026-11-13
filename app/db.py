@@ -104,6 +104,22 @@ class Key(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Order(Base):
+    """One purchase attempt made through the shop bot."""
+
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    plan_name: Mapped[str] = mapped_column(String(100))
+    days: Mapped[int]
+    amount_paise: Mapped[int]
+    link_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | paid
+    payment_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+    key: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
     # create_all does not add columns to a table that already exists, so add them here.

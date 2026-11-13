@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from . import config, tg_client
 from .admin import router as admin_router
+from .shop import router as shop_router, set_telegram_webhook
 from .db import Batch, Key, Lecture, SessionLocal, Subject, Unit, init_db, utcnow
 from .utils import make_token, norm, parse_range, read_token
 
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
     if not config.SECRET_KEY:
         raise RuntimeError("Set SECRET_KEY in the environment.")
     init_db()
+    set_telegram_webhook()  # best effort, only if the shop bot is configured
     if config.SESSION_STRING:  # Telegram storage is optional now (links need no Telegram)
         await tg_client.start()
     yield
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Itachi Universe API", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(shop_router)
 
 
 @app.get("/health")
@@ -76,6 +79,11 @@ def activate(body: ActivateBody, request: Request):
         key = db.get(Key, key_text)
         if not key:
             raise HTTPException(404, "Invalid key.")
+        if not key.device_id:  # sold through the shop bot: first phone to use it owns it
+            if key.revoked or key.expires_at <= utcnow():
+                raise HTTPException(403, "This key is not valid any more.")
+            key.device_id = device
+            db.commit()
         if key.device_id != device:
             raise HTTPException(403, "This key belongs to a different device.")
         if key.revoked:
