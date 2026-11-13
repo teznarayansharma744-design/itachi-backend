@@ -61,6 +61,25 @@ def set_telegram_webhook() -> None:
         print("shop: could not set webhook:", e)
 
 
+_bot_username: str | None = None
+
+
+@router.get("/info")
+def shop_info():
+    """The app asks this to find the shop bot and the prices."""
+    global _bot_username
+    if not _enabled():
+        raise HTTPException(503, "Shop is not set up.")
+    if not _bot_username:
+        try:
+            _bot_username = tg_call(config.SHOP_BOT_TOKEN, "getMe", {})["result"]["username"]
+        except Exception:
+            raise HTTPException(503, "Shop bot is not reachable.")
+    return {"bot": _bot_username, "plans": [
+        {"name": p["name"], "days": p["days"], "price": p["price"]} for p in parse_plans(config.PLANS)
+    ]}
+
+
 # ---------- Fulfilment (the only place a key is created) ----------
 
 def fulfil(order_id: str, payment_id: str) -> str | None:
@@ -194,7 +213,7 @@ def _handle_update(update: dict) -> None:
             "Send /start to buy. Send /mykey to see your keys again. "
             f"Problem with a payment? Message @{html.escape(config.SUPPORT_USERNAME)}.",
         )
-    elif low.startswith("/start") or not parse_device_id(text):
+    elif not parse_device_id(text):  # also covers a bare /start
         _ask_device(chat, plans)
     else:
         device = parse_device_id(text)
