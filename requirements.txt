@@ -5,3 +5,4 @@ sqlalchemy>=2.0,<3
 pg8000>=1.30
 telethon>=1.36,<2
 python-dotenv>=1.0
+yt-dlp>=2025.1.15
