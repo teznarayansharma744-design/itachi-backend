@@ -109,3 +109,12 @@ Notes: the bot asks for the buyer's Device ID first and the key is locked to it 
 "Change device" still works). Keep UptimeRobot pinging
 `/health` so Render is awake when a payment comes in. Razorpay retries a missed webhook, and
 the "I have paid, check now" button asks Razorpay directly as a backup.
+
+## Coupons and dashboard
+
+- Add `ADMIN_IDS=<your Telegram numeric id>` in Render (get it from @userinfobot).
+- In the shop bot, as admin: `/addcoupon SAVE20 20 50` (code, percent off, max uses, 0 = unlimited),
+  `/coupons`, `/delcoupon SAVE20`. A student adds the coupon after the Device ID:
+  `7K2M-9XQP-4TDA SAVE20`.
+- Admin panel in the app shows sales, orders and the most watched lectures. "Home notice" sets
+  the banner on the students' Home screen.

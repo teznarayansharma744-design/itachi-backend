@@ -12,8 +12,9 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from . import config
-from .db import Key, Order, SessionLocal, utcnow
+from .db import Coupon, Key, Order, SessionLocal, utcnow
 from .payments import (
+    find_coupon_word as _find_coupon_word,
     paid_payment_id,
     parse_device_id,
     parse_plans,
@@ -99,6 +100,10 @@ def fulfil(order_id: str, payment_id: str) -> str | None:
         order.status = "paid"
         order.payment_id = payment_id
         order.key = key.key
+        if order.coupon:
+            c = db.get(Coupon, order.coupon)
+            if c:
+                c.uses += 1
         db.commit()
         tg_id, plan, value, device = order.tg_id, order.plan_name, key.key, order.device_id
         until = _until(key.expires_at, order.days)
@@ -177,7 +182,8 @@ def _ask_device(chat: int, plans) -> None:
         f"{_price_lines(plans)}\n\n"
         "Step 1: open the app, go to Get Premium and copy your <b>Device ID</b> "
         "(looks like <code>7K2M-9XQP-4TDA</code>).\n"
-        "Step 2: send it to me here. Then you can pay and I will send your key.",
+        "Step 2: send it to me here. Then you can pay and I will send your key.\n\n"
+        "Have a coupon? Send it after the Device ID, like: <code>7K2M-9XQP-4TDA SAVE20</code>",
     )
 
 
@@ -194,8 +200,8 @@ def _handle_update(update: dict) -> None:
         chat = cq["from"]["id"]
         data = cq.get("data", "")
         if data.startswith("buy:"):
-            _, plan_id, device = (data.split(":", 2) + ["", ""])[:3]
-            _start_purchase(chat, plan_id, parse_device_id(device), plans)
+            _, plan_id, device, coupon = (data.split(":", 3) + ["", "", ""])[:4]
+            _start_purchase(chat, plan_id, parse_device_id(device), plans, coupon)
         elif data.startswith("paid:"):
             _check_paid(chat, data[5:])
         return
@@ -205,7 +211,9 @@ def _handle_update(update: dict) -> None:
         return
     text = (msg.get("text") or "").strip()
     low = text.lower()
-    if low.startswith("/mykey"):
+    if low.startswith(("/addcoupon", "/delcoupon", "/coupons")):
+        _coupon_admin(chat, text)
+    elif low.startswith("/mykey"):
         _my_key(chat)
     elif low.startswith("/help"):
         _send(
@@ -217,17 +225,18 @@ def _handle_update(update: dict) -> None:
         _ask_device(chat, plans)
     else:
         device = parse_device_id(text)
+        coupon = _find_coupon_word(text, device)
         if len(plans) == 1:
-            _start_purchase(chat, plans[0]["id"], device, plans)
+            _start_purchase(chat, plans[0]["id"], device, plans, coupon)
         else:
             _send(
                 chat,
                 f"Device ID: <code>{device}</code>\nPick a plan:",
-                [[{"text": f"{p['name']} · ₹{p['price']}", "callback_data": f"buy:{p['id']}:{device}"}] for p in plans],
+                [[{"text": f"{p['name']} · ₹{p['price']}", "callback_data": f"buy:{p['id']}:{device}:{coupon}"}] for p in plans],
             )
 
 
-def _start_purchase(chat: int, plan_id: str, device: str | None, plans) -> None:
+def _start_purchase(chat: int, plan_id: str, device: str | None, plans, coupon: str = "") -> None:
     plan = next((p for p in plans if p["id"] == plan_id), None)
     if not plan:
         return _send(chat, "That plan is not available. Send /start again.")
@@ -249,13 +258,22 @@ def _start_purchase(chat: int, plan_id: str, device: str | None, plans) -> None:
         ).all()
         if len(recent) >= 5:
             return _send(chat, "Too many unpaid links. Please pay one of them or try again in an hour.")
+        amount = plan["price"] * 100
+        off = 0
+        if coupon:
+            c = db.get(Coupon, coupon)
+            if not c or not c.active or (c.max_uses and c.uses >= c.max_uses):
+                return _send(chat, "That coupon is not valid or has been used up. Send your Device ID again without it, or with a correct coupon.")
+            off = c.percent
+            amount = max(100, amount * (100 - off) // 100)
         order = Order(
             id=secrets.token_hex(6),
             tg_id=chat,
             plan_name=plan["name"],
             days=plan["days"],
             device_id=device,
-            amount_paise=plan["price"] * 100,
+            coupon=coupon if off else "",
+            amount_paise=amount,
         )
         db.add(order)
         db.commit()
@@ -279,11 +297,13 @@ def _start_purchase(chat: int, plan_id: str, device: str | None, plans) -> None:
         oid = order.id
     _send(
         chat,
-        f"<b>{html.escape(plan['name'])}</b> · ₹{plan['price']}\nDevice: <code>{device}</code>\n\n"
+        f"<b>{html.escape(plan['name'])}</b> · ₹{amount / 100:g}"
+        + (f" (coupon {html.escape(coupon)}: {off}% off)" if off else "")
+        + f"\nDevice: <code>{device}</code>\n\n"
         "Pay with UPI, card or netbanking. Your key arrives here by itself within a minute of "
         "paying. The link works for 2 hours.",
         [
-            [{"text": f"Pay ₹{plan['price']}", "url": link["short_url"]}],
+            [{"text": f"Pay ₹{amount / 100:g}", "url": link["short_url"]}],
             [{"text": "I have paid, check now", "callback_data": f"paid:{oid}"}],
         ],
     )
@@ -329,3 +349,40 @@ def _my_key(chat: int) -> None:
     if not lines:
         return _send(chat, "You have no key yet. Send /start to buy one.")
     _send(chat, "\n\n".join(lines))
+
+
+def _coupon_admin(chat: int, text: str) -> None:
+    """/addcoupon CODE PERCENT [MAX_USES], /delcoupon CODE, /coupons. Only for ADMIN_IDS."""
+    if chat not in config.ADMIN_IDS:
+        return _send(chat, "This command is only for the admin.")
+    parts = text.split()
+    cmd = parts[0].lower().split("@")[0]
+    with SessionLocal() as db:
+        if cmd == "/coupons":
+            rows = db.scalars(select(Coupon)).all()
+            if not rows:
+                return _send(chat, "No coupons yet. Add one: /addcoupon SAVE20 20 50")
+            lines = []
+            for c in rows:
+                limit = f"/{c.max_uses}" if c.max_uses else ""
+                lines.append(f"<code>{html.escape(c.code)}</code> {c.percent}% off, used {c.uses}{limit}")
+            return _send(chat, "\n".join(lines))
+        if cmd == "/delcoupon":
+            code = parts[1].upper() if len(parts) > 1 else ""
+            c = db.get(Coupon, code)
+            if not c:
+                return _send(chat, "No such coupon.")
+            db.delete(c)
+            db.commit()
+            return _send(chat, f"Deleted {html.escape(code)}.")
+        if len(parts) < 3 or not parts[1].isalnum() or not parts[2].isdigit() or not 1 <= int(parts[2]) <= 99:
+            return _send(chat, "Use: /addcoupon CODE PERCENT [MAX_USES]\nExample: /addcoupon SAVE20 20 50")
+        code, pct = parts[1].upper()[:32], int(parts[2])
+        mx = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+        c = db.get(Coupon, code)
+        if c:
+            c.percent, c.max_uses, c.active = pct, mx, True
+        else:
+            db.add(Coupon(code=code, percent=pct, max_uses=mx))
+        db.commit()
+    _send(chat, f"Coupon <code>{html.escape(code)}</code>: {pct}% off" + (f", max {mx} uses." if mx else ", unlimited uses."))

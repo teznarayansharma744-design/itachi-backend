@@ -102,3 +102,13 @@ def parse_device_id(text: str) -> str | None:
     """Finds a Device ID like 7K2M-9XQP-4TDA in a message. Returns it in capitals, or None."""
     m = _DEVICE_RE.search((text or "").upper())
     return m.group(0) if m else None
+
+
+def find_coupon_word(text: str, device: str | None) -> str:
+    """The first extra word in the message after the Device ID, in capitals, or ''."""
+    rest = (text or "").upper().replace(device or "", " ")
+    for word in rest.split():
+        word = word.strip(".,;:!?")
+        if word and word != "/START" and word.isalnum() and len(word) <= 32:
+            return word
+    return ""

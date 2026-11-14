@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from . import config, tg_client
 from .admin import router as admin_router
 from .shop import router as shop_router, set_telegram_webhook
-from .db import Batch, Key, Lecture, SessionLocal, Setting, Subject, Unit, init_db, utcnow
+from .db import Batch, Key, Lecture, LectureView, SessionLocal, Setting, Subject, Unit, init_db, utcnow
 from .utils import make_token, norm, parse_range, read_token
 
 
@@ -53,6 +53,19 @@ def about():
             return json.loads(row.value) if row and row.value else DEFAULT_ABOUT
         except ValueError:
             return DEFAULT_ABOUT
+
+
+@app.get("/announce")
+def announce():
+    """The banner shown on the app's Home screen. Empty text means no banner."""
+    import json
+
+    with SessionLocal() as db:
+        row = db.get(Setting, "announce")
+        try:
+            return json.loads(row.value) if row and row.value else {"text": "", "link": ""}
+        except ValueError:
+            return {"text": "", "link": ""}
 
 
 # ---------- Access ----------
@@ -191,6 +204,13 @@ def play(lecture_id: int, kind: str, authorization: str | None = Header(None)):
             raise HTTPException(404, "Nothing here.")
         if not lec.free and premium_key(db, authorization) is None:
             raise HTTPException(403, "Premium required.")
+        if kind == "video":  # counted for the admin dashboard
+            row = db.get(LectureView, lecture_id)
+            if row:
+                row.count += 1
+            else:
+                db.add(LectureView(lecture_id=lecture_id, count=1))
+            db.commit()
         return {"kind": "link", "url": url} if url else {"kind": "stream"}
 
 

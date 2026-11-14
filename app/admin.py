@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from . import config
-from .db import Batch, Key, Lecture, SessionLocal, Setting, Subject, Unit, utcnow
+from .db import Batch, Key, Lecture, LectureView, Order, SessionLocal, Setting, Subject, Unit, utcnow
 from .utils import make_admin_token, new_key, norm, read_token
 
 router = APIRouter(prefix="/admin")
@@ -84,12 +84,49 @@ def stats(authorization: str | None = Header(None)):
         expired = db.scalar(
             select(func.count()).select_from(Key).where(~Key.revoked, Key.expires_at <= now)
         ) or 0
+        paid = db.scalars(select(Order).where(Order.status == "paid")).all()
+        day_ago = now - timedelta(days=1)
+        week_ago = now - timedelta(days=7)
+        top = db.execute(
+            select(LectureView.lecture_id, LectureView.count, Lecture.title)
+            .join(Lecture, Lecture.id == LectureView.lecture_id)
+            .order_by(LectureView.count.desc())
+            .limit(5)
+        ).all()
     return {
         "total": total,
         "active": total - revoked - expired,
         "expired": expired,
         "revoked": revoked,
+        "orders": len(paid),
+        "revenue": sum(o.amount_paise for o in paid) // 100,
+        "orders_today": sum(1 for o in paid if o.created_at >= day_ago),
+        "revenue_week": sum(o.amount_paise for o in paid if o.created_at >= week_ago) // 100,
+        "top_lectures": [{"title": t, "views": c} for _, c, t in top],
     }
+
+
+class AnnounceBody(BaseModel):
+    text: str = Field("", max_length=500)
+    link: str = Field("", max_length=500)
+
+
+@router.put("/announce")
+def save_announce(body: AnnounceBody, authorization: str | None = Header(None)):
+    """The banner on the app's Home screen. Empty text hides it."""
+    require_admin(authorization)
+    link = body.link.strip()
+    if link and not link.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "The link must start with http:// or https://")
+    value = json.dumps({"text": body.text.strip(), "link": link}, ensure_ascii=False)
+    with SessionLocal() as db:
+        row = db.get(Setting, "announce")
+        if row:
+            row.value = value
+        else:
+            db.add(Setting(key="announce", value=value))
+        db.commit()
+    return json.loads(value)
 
 
 @router.get("/keys")

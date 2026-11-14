@@ -39,3 +39,10 @@ def test_parse_device_id():
     assert parse_device_id("my id is 7k2m-9xqp-4tda ok") == "7K2M-9XQP-4TDA"
     assert parse_device_id("/start") is None
     assert parse_device_id("1234-5678") is None
+
+
+def test_find_coupon_word():
+    from app.payments import find_coupon_word
+    assert find_coupon_word("7K2M-9XQP-4TDA save20", "7K2M-9XQP-4TDA") == "SAVE20"
+    assert find_coupon_word("/start 7K2M-9XQP-4TDA", "7K2M-9XQP-4TDA") == ""
+    assert find_coupon_word("7K2M-9XQP-4TDA", "7K2M-9XQP-4TDA") == ""
