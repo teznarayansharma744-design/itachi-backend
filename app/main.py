@@ -206,6 +206,7 @@ def _youtube_progressive_stream(url: str) -> str:
             # Prefer a broadly compatible progressive MP4, then another combined format.
             "format": "best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best",
         }
+        options["cookiefile"] = "/etc/secrets/cookies.txt"
         with YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
         stream_url = info.get("url") if isinstance(info, dict) else None
