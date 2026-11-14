@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -12,8 +12,8 @@ from sqlalchemy.orm import selectinload
 from . import config, tg_client
 from .admin import router as admin_router
 from .shop import router as shop_router, set_telegram_webhook
-from .db import Batch, Key, Lecture, SessionLocal, Subject, Unit, init_db, utcnow
-from .utils import make_token, norm, parse_range, read_token
+from .db import Batch, Key, Lecture, SessionLocal, Setting, Subject, Unit, init_db, utcnow
+from .utils import make_link_token, make_token, norm, parse_range, read_token
 
 
 @asynccontextmanager
@@ -36,6 +36,23 @@ app.include_router(shop_router)
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# ---------- About developer (public, edited from the admin panel) ----------
+
+DEFAULT_ABOUT = {"name": "Itachi Universe", "tagline": "", "sections": []}
+
+
+@app.get("/about")
+def about():
+    import json
+
+    with SessionLocal() as db:
+        row = db.get(Setting, "about")
+        try:
+            return json.loads(row.value) if row and row.value else DEFAULT_ABOUT
+        except ValueError:
+            return DEFAULT_ABOUT
 
 
 # ---------- Access ----------
@@ -156,6 +173,50 @@ def catalog(authorization: str | None = Header(None)):
 
 
 # ---------- Play info ----------
+
+def _is_youtube(url: str) -> bool:
+    u = url.lower()
+    return "youtube.com/" in u or "youtu.be/" in u or "youtube-nocookie.com/" in u
+
+
+@app.get("/play/{lecture_id}/external")
+def play_external(lecture_id: int, request: Request, authorization: str | None = Header(None)):
+    """A short-lived link for MX Player, VLC or PlayIt. Direct video links only (mp4/m3u8)."""
+    with SessionLocal() as db:
+        lec = db.get(Lecture, lecture_id)
+        if not lec or not (lec.video_url or lec.video_msg_id):
+            raise HTTPException(404, "Video not found.")
+        key = premium_key(db, authorization)
+        if not lec.free and key is None:
+            raise HTTPException(403, "Premium required.")
+        if not lec.video_url:
+            raise HTTPException(422, "This video cannot be opened in another player.")
+        if _is_youtube(lec.video_url):
+            raise HTTPException(422, "YouTube videos play only in the default player.")
+        token = make_link_token(
+            config.SECRET_KEY, lec.id, key.key if key else "", config.LINK_MINUTES * 60
+        )
+    base = config.PUBLIC_URL or str(request.base_url).rstrip("/").replace("http://", "https://")
+    return {"url": f"{base}/s/{token}", "expires_in": config.LINK_MINUTES * 60}
+
+
+@app.get("/s/{token}")
+def open_external(token: str):
+    """Opened by the external player. Checks the link and the key again, then sends the
+    player to the real video. A revoked or expired key stops working here immediately."""
+    data = read_token(config.SECRET_KEY, token)
+    if not data or "l" not in data:
+        raise HTTPException(403, "This link has expired. Open the lecture again from the app.")
+    with SessionLocal() as db:
+        lec = db.get(Lecture, data["l"])
+        if not lec or not lec.video_url:
+            raise HTTPException(404, "Video not found.")
+        if not lec.free:
+            key = db.get(Key, data.get("k") or "")
+            if not key or key.revoked or key.expires_at <= utcnow():
+                raise HTTPException(403, "Premium access has ended.")
+        return RedirectResponse(lec.video_url, status_code=302, headers={"Cache-Control": "no-store"})
+
 
 @app.get("/play/{lecture_id}/{kind}")
 def play(lecture_id: int, kind: str, authorization: str | None = Header(None)):

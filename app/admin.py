@@ -1,6 +1,7 @@
 """Admin API used by the admin panel inside the app.
 Log in with ADMIN_PASSWORD, then manage keys (students) and the lectures."""
 import hmac
+import json
 import time
 from collections import defaultdict
 from datetime import timedelta
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from . import config
-from .db import Batch, Key, Lecture, SessionLocal, Subject, Unit, utcnow
+from .db import Batch, Key, Lecture, SessionLocal, Setting, Subject, Unit, utcnow
 from .utils import make_admin_token, new_key, norm, read_token
 
 router = APIRouter(prefix="/admin")
@@ -301,6 +302,42 @@ _TREE = {
     "subjects": (Subject, Batch, "batch_id"),
     "units": (Unit, Subject, "subject_id"),
 }
+
+
+class LinkBody(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
+    url: str = Field(max_length=500)
+
+
+class SectionBody(BaseModel):
+    heading: str = Field("", max_length=100)
+    body: str = Field("", max_length=3000)
+    links: list[LinkBody] = Field(default_factory=list, max_length=6)
+
+
+class AboutBody(BaseModel):
+    name: str = Field("", max_length=100)
+    tagline: str = Field("", max_length=200)
+    sections: list[SectionBody] = Field(default_factory=list, max_length=30)
+
+
+@router.put("/about")
+def save_about(body: AboutBody, authorization: str | None = Header(None)):
+    """Replaces the whole About Developer page."""
+    require_admin(authorization)
+    for sec in body.sections:
+        for link in sec.links:
+            if not link.url.lower().startswith(("http://", "https://")):
+                raise HTTPException(400, f'Link "{link.label}" must start with http:// or https://')
+    value = json.dumps(body.model_dump(), ensure_ascii=False)
+    with SessionLocal() as db:
+        row = db.get(Setting, "about")
+        if row:
+            row.value = value
+        else:
+            db.add(Setting(key="about", value=value))
+        db.commit()
+    return body.model_dump()
 
 
 @router.post("/{kind}")

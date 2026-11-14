@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, create_engine, inspect, text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text, create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -102,6 +102,14 @@ class Key(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Setting(Base):
+    """Small key/value store. The 'about' key holds the About Developer page as JSON."""
+
+    __tablename__ = "settings"
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
 
 
 class Order(Base):
