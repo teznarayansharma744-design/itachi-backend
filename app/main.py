@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -13,7 +13,7 @@ from . import config, tg_client
 from .admin import router as admin_router
 from .shop import router as shop_router, set_telegram_webhook
 from .db import Batch, Key, Lecture, SessionLocal, Setting, Subject, Unit, init_db, utcnow
-from .utils import make_link_token, make_token, norm, parse_range, read_token
+from .utils import make_token, norm, parse_range, read_token
 
 
 @asynccontextmanager
@@ -173,96 +173,6 @@ def catalog(authorization: str | None = Header(None)):
 
 
 # ---------- Play info ----------
-
-def _is_youtube(url: str) -> bool:
-    """Recognise YouTube URLs by hostname (not by a substring in the URL path)."""
-    from urllib.parse import urlparse
-
-    try:
-        host = (urlparse(url).hostname or "").lower().rstrip(".")
-    except ValueError:
-        return False
-    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com") or \
-        host == "youtube-nocookie.com" or host.endswith(".youtube-nocookie.com")
-
-
-def _youtube_progressive_stream(url: str) -> str:
-    """Resolve a YouTube URL to one progressive A/V stream suitable for external players.
-
-    This deliberately selects a single combined audio+video format; separate DASH
-    audio/video tracks cannot be handed to MX Player/PLAYit/VLC as one URL.
-    """
-    try:
-        from yt_dlp import YoutubeDL
-
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "socket_timeout": 20,
-            "retries": 1,
-            "extractor_retries": 1,
-            # Prefer a broadly compatible progressive MP4, then another combined format.
-            "format": "best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best",
-        }
-        options["cookiefile"] = "/etc/secrets/cookies.txt"
-        options["format"] = "best[height<=480]/best[height<=360]/best"
-        with YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=False)
-        stream_url = info.get("url") if isinstance(info, dict) else None
-        if not stream_url:
-            raise ValueError("No single-file progressive stream was returned")
-        return stream_url
-    except Exception as exc:
-        # Keep extractor internals and any signed media URL out of the API response.
-        raise HTTPException(
-            502,
-            "Could not prepare this YouTube video for an external player. "
-            "It may be unavailable, restricted, or unsupported. Try the Default Player.",
-        ) from exc
-
-
-@app.get("/play/{lecture_id}/external")
-def play_external(lecture_id: int, request: Request, authorization: str | None = Header(None)):
-    """Issue a short-lived external-player link for direct media or YouTube videos."""
-    with SessionLocal() as db:
-        lec = db.get(Lecture, lecture_id)
-        if not lec or not (lec.video_url or lec.video_msg_id):
-            raise HTTPException(404, "Video not found.")
-        key = premium_key(db, authorization)
-        if not lec.free and key is None:
-            raise HTTPException(403, "Premium required.")
-        if not lec.video_url:
-            raise HTTPException(422, "This video cannot be opened in another player.")
-        token = make_link_token(
-            config.SECRET_KEY, lec.id, key.key if key else "", config.LINK_MINUTES * 60
-        )
-    base = config.PUBLIC_URL or str(request.base_url).rstrip("/").replace("http://", "https://")
-    return {"url": f"{base}/s/{token}", "expires_in": config.LINK_MINUTES * 60}
-
-
-@app.get("/s/{token}")
-def open_external(token: str):
-    """Validate the short-lived link and redirect to direct media or a fresh YouTube stream.
-
-    The YouTube stream is extracted when the player opens this URL, not when the app
-    first requests it, so the signed googlevideo URL is as fresh as possible.
-    """
-    data = read_token(config.SECRET_KEY, token)
-    if not data or "l" not in data:
-        raise HTTPException(403, "This link has expired. Open the lecture again from the app.")
-    with SessionLocal() as db:
-        lec = db.get(Lecture, data["l"])
-        if not lec or not lec.video_url:
-            raise HTTPException(404, "Video not found.")
-        if not lec.free:
-            key = db.get(Key, data.get("k") or "")
-            if not key or key.revoked or key.expires_at <= utcnow():
-                raise HTTPException(403, "Premium access has ended.")
-        target_url = _youtube_progressive_stream(lec.video_url) if _is_youtube(lec.video_url) else lec.video_url
-        return RedirectResponse(target_url, status_code=302, headers={"Cache-Control": "no-store"})
-
 
 @app.get("/play/{lecture_id}/{kind}")
 def play(lecture_id: int, kind: str, authorization: str | None = Header(None)):

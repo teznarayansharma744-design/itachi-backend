@@ -37,6 +37,3 @@ PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 # Plans as name:days:price_in_rupees, separated by commas. 36500 days = lifetime.
 PLANS = os.environ.get("PLANS", "Lifetime:36500:100")
 SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "Use_r_tg")
-
-# How long a link handed to an external player (MX, VLC, PlayIt) stays valid.
-LINK_MINUTES = int(os.environ.get("LINK_MINUTES") or 15)

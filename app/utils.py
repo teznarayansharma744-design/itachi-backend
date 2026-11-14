@@ -37,17 +37,6 @@ def make_admin_token(secret: str, days: int) -> str:
     return f"{body}.{sig}"
 
 
-def make_link_token(secret: str, lecture_id: int, key: str, seconds: int) -> str:
-    """Short-lived link for an external video player. 'k' is the premium key it was issued
-    to (empty for a free lecture), so revoking that key kills the link at once."""
-    payload = {"l": lecture_id, "k": key, "e": int(time.time() + seconds)}
-    body = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
-    sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-    return f"{body}.{sig}"
-
-
 def read_token(secret: str, token: str):
     """Returns the payload dict, or None if the token is bad or expired."""
     try:

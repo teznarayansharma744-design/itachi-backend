@@ -74,11 +74,3 @@ def test_lecture_line():
                 "1 | T | https://a.com | what", "1 | T | https://a .com/v", None):
         assert parse_lecture_line(bad) is None, bad
 
-
-def test_link_token_expiry_and_tamper():
-    from app.utils import make_link_token
-    t = make_link_token("s3cret", 7, "KEY1", 60)
-    d = read_token("s3cret", t)
-    assert d["l"] == 7 and d["k"] == "KEY1"
-    assert read_token("other", t) is None
-    assert read_token("s3cret", make_link_token("s3cret", 7, "K", -5)) is None

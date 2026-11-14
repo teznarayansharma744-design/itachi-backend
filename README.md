@@ -109,18 +109,3 @@ Notes: the bot asks for the buyer's Device ID first and the key is locked to it 
 "Change device" still works). Keep UptimeRobot pinging
 `/health` so Render is awake when a payment comes in. Razorpay retries a missed webhook, and
 the "I have paid, check now" button asks Razorpay directly as a backup.
-
-## YouTube links in external players
-
-The default in-app player continues to receive the original YouTube URL and uses the
-existing YouTube player view. For MX Player, PLAYit and VLC, `/play/{lecture_id}/external`
-continues to issue the same short-lived signed app link. When that link is opened,
-`/s/{token}` checks the lecture and premium-key status, then resolves a YouTube URL to
-a single progressive audio+video stream using `yt-dlp` and redirects the external player
-to that stream. Direct MP4/M3U8 links still use the existing redirect path.
-
-`yt-dlp` is added to `requirements.txt`; redeploy the backend so the dependency is
-installed. Some videos (private, age/region restricted, sign-in required, live, or without
-a compatible progressive format) may not work in external players. For those videos,
-use the Default Player. Only use external extraction for videos you own or are authorized
-to distribute, and follow the platform's terms and applicable copyright rules.
